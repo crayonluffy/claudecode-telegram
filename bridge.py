@@ -333,7 +333,8 @@ class Handler(BaseHTTPRequestHandler):
         # Build message with caption if provided
         caption = msg.get("caption", "").strip()
         if caption:
-            prompt = f"{caption}\n\nImage: {local_path}"
+            # Use single line - newlines in tmux send-keys are interpreted as Enter
+            prompt = f"{caption} [Image: {local_path}]"
         else:
             prompt = f"Please analyze this image: {local_path}"
 
