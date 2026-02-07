@@ -16,6 +16,7 @@ PENDING_FILE = os.path.expanduser("~/.claude/telegram_pending")
 HISTORY_FILE = os.path.expanduser("~/.claude/history.jsonl")
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 PORT = int(os.environ.get("PORT", "8080"))
+UPLOAD_DIR = os.path.expanduser(os.environ.get("UPLOAD_DIR", "~/uploads"))
 
 BOT_COMMANDS = [
     {"command": "clear", "description": "Clear conversation"},
@@ -46,6 +47,35 @@ def telegram_api(method, data):
             return json.loads(r.read())
     except Exception as e:
         print(f"Telegram API error: {e}")
+        return None
+
+
+def download_telegram_file(file_id):
+    """Download a file from Telegram and save to dated folder. Returns local path."""
+    result = telegram_api("getFile", {"file_id": file_id})
+    if not result or not result.get("ok"):
+        return None
+
+    file_path = result.get("result", {}).get("file_path", "")
+    if not file_path:
+        return None
+
+    # Create dated folder
+    from datetime import datetime
+    date_folder = datetime.now().strftime("%Y-%m-%d")
+    save_dir = Path(UPLOAD_DIR) / date_folder
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # Download file
+    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+    file_name = f"{file_id}_{Path(file_path).name}"
+    local_path = save_dir / file_name
+
+    try:
+        urllib.request.urlretrieve(file_url, local_path)
+        return str(local_path)
+    except Exception as e:
+        print(f"Download error: {e}")
         return None
 
 
@@ -161,8 +191,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_message(self, update):
         msg = update.get("message", {})
-        text, chat_id, msg_id = msg.get("text", ""), msg.get("chat", {}).get("id"), msg.get("message_id")
-        if not text or not chat_id:
+        chat_id, msg_id = msg.get("chat", {}).get("id"), msg.get("message_id")
+        if not chat_id:
+            return
+
+        # Handle photo uploads
+        if "photo" in msg:
+            self.handle_photo(msg, chat_id, msg_id)
+            return
+
+        text = msg.get("text", "")
+        if not text:
             return
 
         with open(CHAT_ID_FILE, "w") as f:
@@ -260,6 +299,50 @@ class Handler(BaseHTTPRequestHandler):
 
         threading.Thread(target=send_typing_loop, args=(chat_id,), daemon=True).start()
         tmux_send(text)
+        tmux_send_enter()
+
+    def handle_photo(self, msg, chat_id, msg_id):
+        """Handle photo uploads - download and send path to Claude."""
+        with open(CHAT_ID_FILE, "w") as f:
+            f.write(str(chat_id))
+
+        # Get largest photo (last in array)
+        photos = msg.get("photo", [])
+        if not photos:
+            return
+        file_id = photos[-1].get("file_id")
+
+        # Download photo
+        local_path = download_telegram_file(file_id)
+        if not local_path:
+            self.reply(chat_id, "Failed to download photo")
+            return
+
+        # React to confirm receipt
+        if msg_id:
+            telegram_api("setMessageReaction", {
+                "chat_id": chat_id,
+                "message_id": msg_id,
+                "reaction": [{"type": "emoji", "emoji": "\U0001F4F7"}]  # camera emoji
+            })
+
+        if not tmux_exists():
+            self.reply(chat_id, f"Photo saved: {local_path}\n(tmux not found)")
+            return
+
+        # Build message with caption if provided
+        caption = msg.get("caption", "").strip()
+        if caption:
+            prompt = f"{caption}\n\nImage: {local_path}"
+        else:
+            prompt = f"Please analyze this image: {local_path}"
+
+        print(f"[{chat_id}] Photo: {local_path}")
+        with open(PENDING_FILE, "w") as f:
+            f.write(str(int(time.time())))
+
+        threading.Thread(target=send_typing_loop, args=(chat_id,), daemon=True).start()
+        tmux_send(prompt)
         tmux_send_enter()
 
     def reply(self, chat_id, text):
