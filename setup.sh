@@ -25,17 +25,20 @@ if [ -n "$STRAY_PIDS" ]; then
     sleep 1
 fi
 
-# Install hooks
+# Install hooks, replacing %BRIDGE_DIR% placeholder with actual path
 mkdir -p "$HOME/.claude/hooks"
 echo "Installing hooks..."
-cp "$SCRIPT_DIR/hooks/"*.sh "$HOME/.claude/hooks/"
+for f in "$SCRIPT_DIR/hooks/"*.sh; do
+    sed "s|%BRIDGE_DIR%|$SCRIPT_DIR|g" "$f" > "$HOME/.claude/hooks/$(basename "$f")"
+done
 chmod +x "$HOME/.claude/hooks/"*.sh
 
-# Copy service files
+# Copy service files, replacing %BRIDGE_DIR% placeholder with actual path
 mkdir -p "$SYSTEMD_DIR"
 echo "Installing systemd units..."
-cp "$SCRIPT_DIR/systemd/"*.service "$SYSTEMD_DIR/"
-cp "$SCRIPT_DIR/systemd/"*.path "$SYSTEMD_DIR/"
+for f in "$SCRIPT_DIR/systemd/"*.service "$SCRIPT_DIR/systemd/"*.path; do
+    sed "s|%BRIDGE_DIR%|$SCRIPT_DIR|g" "$f" > "$SYSTEMD_DIR/$(basename "$f")"
+done
 
 # Reload systemd
 systemctl --user daemon-reload

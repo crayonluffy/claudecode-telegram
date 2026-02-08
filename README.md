@@ -22,7 +22,7 @@ flowchart LR
 ## Quick Start
 
 ```bash
-git clone https://github.com/hanxiao/claudecode-telegram
+git clone https://github.com/crayonluffy/claudecode-telegram
 cd claudecode-telegram
 
 # Create .env
@@ -147,7 +147,7 @@ curl "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=https://Y
 
 ## Features
 
-- **Interactive prompts**: Claude's `AskUserQuestion` prompts appear as Telegram inline buttons
+- **Interactive prompts**: Claude's `AskUserQuestion` prompts appear as Telegram inline buttons. Type free text to submit a custom answer via the "Type something" option natively
 - **Photo support**: Send photos (including albums) — they're downloaded and passed to Claude
 - **Resume sessions**: `/restart` captures the session ID and offers a "Resume previous" button
 - **Multi-session**: Use `/sessions` and `/attach` to switch between tmux sessions
