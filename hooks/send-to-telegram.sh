@@ -16,8 +16,15 @@ NOW=$(date +%s)
 [ -z "$PENDING_TIME" ] || [ $((NOW - PENDING_TIME)) -gt 600 ] && rm -f "$PENDING_FILE" && exit 0
 [ ! -f "$CHAT_ID_FILE" ] || [ ! -f "$TRANSCRIPT_PATH" ] && rm -f "$PENDING_FILE" && exit 0
 
+# Check if the last content block of the last assistant message is tool_use.
+# If so, a tool is about to run and the turn isn't finished yet.
+# If the last block is text (even if earlier blocks have tool_use), the turn is done.
+LAST_ASSISTANT=$(grep '"type":"assistant"' "$TRANSCRIPT_PATH" | tail -1)
+LAST_BLOCK_TYPE=$(echo "$LAST_ASSISTANT" | jq -r '.message.content[-1].type // empty' 2>/dev/null)
+[ "$LAST_BLOCK_TYPE" = "tool_use" ] && exit 0
+
 CHAT_ID=$(cat "$CHAT_ID_FILE")
-LAST_USER_LINE=$(grep -n '"type":"user"' "$TRANSCRIPT_PATH" | tail -1 | cut -d: -f1)
+LAST_USER_LINE=$(grep -n '"type":"user"' "$TRANSCRIPT_PATH" | grep -v '"tool_result"' | tail -1 | cut -d: -f1)
 [ -z "$LAST_USER_LINE" ] && rm -f "$PENDING_FILE" && exit 0
 
 TMPFILE=$(mktemp)
