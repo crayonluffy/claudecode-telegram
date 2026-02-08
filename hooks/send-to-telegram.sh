@@ -9,6 +9,9 @@ if [ -z "$TELEGRAM_BOT_TOKEN" ] && [ -f "$ENV_FILE" ]; then
 fi
 [ -z "$TELEGRAM_BOT_TOKEN" ] && exit 0
 
+DEBUG_LOG=~/.claude/telegram_hook_debug.log
+dbg() { echo "$(date '+%H:%M:%S') $1" >> "$DEBUG_LOG"; }
+
 INPUT=$(cat)
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path')
 CHAT_ID_FILE=~/.claude/telegram_chat_id
@@ -17,25 +20,27 @@ SESSION_FILE=~/.claude/telegram_tmux_session
 TMUX_SESSION=$(cat "$SESSION_FILE" 2>/dev/null)
 TMUX_SESSION="${TMUX_SESSION:-claude}"
 
+dbg "HOOK START session=$TMUX_SESSION transcript=$TRANSCRIPT_PATH input=$(echo "$INPUT" | head -c 500)"
+
 # Only respond to Telegram-initiated messages
-[ ! -f "$PENDING_FILE" ] && exit 0
+[ ! -f "$PENDING_FILE" ] && dbg "EXIT: no pending file" && exit 0
 
 PENDING_TIME=$(cat "$PENDING_FILE" 2>/dev/null)
 NOW=$(date +%s)
-[ -z "$PENDING_TIME" ] || [ $((NOW - PENDING_TIME)) -gt 600 ] && rm -f "$PENDING_FILE" && exit 0
-[ ! -f "$CHAT_ID_FILE" ] || [ ! -f "$TRANSCRIPT_PATH" ] && rm -f "$PENDING_FILE" && exit 0
+if [ -z "$PENDING_TIME" ] || [ $((NOW - PENDING_TIME)) -gt 600 ]; then dbg "EXIT: stale pending (age=$((NOW - PENDING_TIME))s)"; rm -f "$PENDING_FILE"; exit 0; fi
+if [ ! -f "$CHAT_ID_FILE" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then dbg "EXIT: missing chatid=$CHAT_ID_FILE or transcript=$TRANSCRIPT_PATH"; rm -f "$PENDING_FILE"; exit 0; fi
 
 # Only allow the Claude instance running in the target tmux session to respond.
 # This prevents other Claude instances (e.g. MRC, SI) from leaking responses to Telegram.
 # Quick check: compare our own tmux session name with the target session.
 MY_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null)
-[ -n "$MY_SESSION" ] && [ "$MY_SESSION" != "$TMUX_SESSION" ] && exit 0
+if [ -n "$MY_SESSION" ] && [ "$MY_SESSION" != "$TMUX_SESSION" ]; then dbg "EXIT: session mismatch MY=$MY_SESSION TARGET=$TMUX_SESSION"; exit 0; fi
 # Also verify via project directory encoding (belt-and-suspenders).
 TMUX_CWD=$(tmux display-message -t "$TMUX_SESSION" -p '#{pane_current_path}' 2>/dev/null)
 if [ -n "$TMUX_CWD" ]; then
     PROJ_DIR=$(echo "$TRANSCRIPT_PATH" | sed 's|.*/projects/||; s|/[^/]*$||')
     TMUX_ENCODED=$(echo "$TMUX_CWD" | sed 's|/|-|g')
-    [ "$PROJ_DIR" != "$TMUX_ENCODED" ] && exit 0
+    if [ "$PROJ_DIR" != "$TMUX_ENCODED" ]; then dbg "EXIT: projdir mismatch PROJ=$PROJ_DIR TMUX=$TMUX_ENCODED"; exit 0; fi
 fi
 
 # Check if Claude Code is waiting for user input by inspecting the tmux pane.
@@ -52,19 +57,21 @@ for _try in 1 2 3 4 5; do
         break
     fi
 done
-[ "$IDLE_FOUND" -eq 0 ] && exit 0
-echo "$PANE_BOTTOM" | grep -q 'Esc to cancel' && exit 0
+if [ "$IDLE_FOUND" -eq 0 ]; then dbg "EXIT: pane not idle after 5 retries, last pane: $(echo "$PANE_BOTTOM" | tail -3 | tr '\n' '|')"; exit 0; fi
+if echo "$PANE_BOTTOM" | grep -q 'Esc to cancel'; then dbg "EXIT: AskUserQuestion prompt active"; exit 0; fi
 
 CHAT_ID=$(cat "$CHAT_ID_FILE")
 LAST_USER_LINE=$(grep -n '"type":"user"' "$TRANSCRIPT_PATH" | grep -v '"tool_result"' | grep -v '"type":"progress"' | tail -1 | cut -d: -f1)
-[ -z "$LAST_USER_LINE" ] && rm -f "$PENDING_FILE" && exit 0
+if [ -z "$LAST_USER_LINE" ]; then dbg "EXIT: no user line found"; rm -f "$PENDING_FILE"; exit 0; fi
+dbg "LAST_USER_LINE=$LAST_USER_LINE"
 
 TMPFILE=$(mktemp)
 tail -n "+$LAST_USER_LINE" "$TRANSCRIPT_PATH" | \
   grep '"type":"assistant"' | \
   jq -rs '[.[].message.content[] | select(.type == "text") | .text] | join("\n\n")' > "$TMPFILE" 2>/dev/null
 
-[ ! -s "$TMPFILE" ] && rm -f "$TMPFILE" "$PENDING_FILE" && exit 0
+if [ ! -s "$TMPFILE" ]; then dbg "EXIT: empty extraction from line $LAST_USER_LINE"; rm -f "$TMPFILE" "$PENDING_FILE"; exit 0; fi
+dbg "SENDING $(wc -c < "$TMPFILE") bytes to chat $(cat "$CHAT_ID_FILE")"
 
 python3 - "$TMPFILE" "$CHAT_ID" "$TELEGRAM_BOT_TOKEN" << 'PYEOF'
 import sys, re, json, urllib.request
@@ -109,5 +116,6 @@ if not send(text, "HTML"):
         send(f.read()[:4096])
 PYEOF
 
+dbg "DONE - sent successfully"
 rm -f "$TMPFILE" "$PENDING_FILE"
 exit 0
