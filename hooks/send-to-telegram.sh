@@ -16,11 +16,12 @@ NOW=$(date +%s)
 [ -z "$PENDING_TIME" ] || [ $((NOW - PENDING_TIME)) -gt 600 ] && rm -f "$PENDING_FILE" && exit 0
 [ ! -f "$CHAT_ID_FILE" ] || [ ! -f "$TRANSCRIPT_PATH" ] && rm -f "$PENDING_FILE" && exit 0
 
-# Check if Claude Code is done by looking for the input prompt footer.
-# "esc to interrupt" only appears when Claude is waiting for user input.
+# Check if Claude Code is waiting for user input by inspecting the tmux pane.
+# Only match patterns that appear when Claude is IDLE (waiting for input).
+# Avoids "esc to interrupt" which appears during active streaming.
 sleep 0.3
-PANE_BOTTOM=$(tmux capture-pane -t claude -p 2>/dev/null | tail -6)
-echo "$PANE_BOTTOM" | grep -q 'esc to interrupt' || exit 0
+PANE_BOTTOM=$(tmux capture-pane -t claude -p 2>/dev/null | tail -8)
+echo "$PANE_BOTTOM" | grep -qE 'to navigate|ctrl-g to edit|tab to cycle' || exit 0
 
 CHAT_ID=$(cat "$CHAT_ID_FILE")
 LAST_USER_LINE=$(grep -n '"type":"user"' "$TRANSCRIPT_PATH" | grep -v '"tool_result"' | tail -1 | cut -d: -f1)
