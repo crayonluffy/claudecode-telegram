@@ -97,6 +97,7 @@ BOT_COMMANDS = [
     {"command": "stop", "description": "Interrupt Claude (Escape)"},
     {"command": "screenshot", "description": "Capture tmux screen"},
     {"command": "status", "description": "Show project, branch, state"},
+    {"command": "projects", "description": "List available projects"},
     {"command": "sessions", "description": "List all tmux sessions"},
     {"command": "attach", "description": "Switch to tmux session"},
     {"command": "start", "description": "Create tmux + start Claude"},
@@ -120,7 +121,7 @@ HELP_TEXT = """Commands:
   /scroll [n] - Last n lines of output
 
 More:
-  /sessions /attach /kill /clear
+  /projects /sessions /attach /kill /clear
   /commit /undo /diff /pwd /loop
   /pick N /y /n /ok /retry
   /verbose /coauthor /signature
@@ -911,6 +912,27 @@ class Handler(BaseHTTPRequestHandler):
                     f"📋 Claude: {sid[:8]}..." if sid else "📋 Claude: unknown",
                     f"⏱️ {state}",
                 ]
+                self.reply(chat_id, "\n".join(lines))
+                return
+
+            # List available project directories
+            if cmd == "/projects":
+                if not os.path.isdir(PROJECTS_BASE):
+                    self.reply(chat_id, f"❌ Projects base not found: {PROJECTS_BASE}")
+                    return
+                dirs = sorted(
+                    d for d in os.listdir(PROJECTS_BASE)
+                    if os.path.isdir(os.path.join(PROJECTS_BASE, d)) and not d.startswith(".")
+                )
+                if not dirs:
+                    self.reply(chat_id, f"No projects found in {PROJECTS_BASE}")
+                    return
+                sessions = list_tmux_sessions()
+                lines = [f"📂 Projects in `{PROJECTS_BASE}`:\n"]
+                for d in dirs:
+                    marker = " ✅" if d in sessions else ""
+                    lines.append(f"  • {d}{marker}")
+                lines.append(f"\n💡 /start <name> to create a session")
                 self.reply(chat_id, "\n".join(lines))
                 return
 
