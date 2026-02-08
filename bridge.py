@@ -1059,7 +1059,7 @@ class Handler(BaseHTTPRequestHandler):
             if cmd == "/restart":
                 parts = text.split(maxsplit=1)
                 start_dir = parts[1].strip() if len(parts) > 1 else None
-                success, msg, prev_sid = tmux_restart_claude(start_dir)
+                success, msg, prev_sid = tmux_restart_claude(session=get_current_session(), start_dir=start_dir)
                 if success:
                     if prev_sid:
                         kb = [[{"text": "Resume previous session", "callback_data": f"resume:{prev_sid}"}]]
