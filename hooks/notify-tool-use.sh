@@ -17,6 +17,14 @@ fi
 [ ! -f "$CHAT_ID_FILE" ] && exit 0
 [ -z "$TELEGRAM_BOT_TOKEN" ] && exit 0
 
+# Only allow the Claude instance running in the target tmux session to send notifications.
+# This prevents other Claude instances from leaking tool-use updates to Telegram.
+SESSION_FILE=~/.claude/telegram_tmux_session
+TMUX_SESSION=$(cat "$SESSION_FILE" 2>/dev/null)
+TMUX_SESSION="${TMUX_SESSION:-claude}"
+MY_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+[ -n "$MY_SESSION" ] && [ "$MY_SESSION" != "$TMUX_SESSION" ] && exit 0
+
 # Check if verbose is enabled
 if [ -f "$SETTINGS_FILE" ]; then
     VERBOSE=$(python3 -c "import json; print(json.load(open('$SETTINGS_FILE')).get('verbose', False))" 2>/dev/null)

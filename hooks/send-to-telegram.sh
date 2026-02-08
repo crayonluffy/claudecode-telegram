@@ -27,12 +27,13 @@ NOW=$(date +%s)
 
 # Only allow the Claude instance running in the target tmux session to respond.
 # This prevents other Claude instances (e.g. MRC, SI) from leaking responses to Telegram.
+# Quick check: compare our own tmux session name with the target session.
+MY_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+[ -n "$MY_SESSION" ] && [ "$MY_SESSION" != "$TMUX_SESSION" ] && exit 0
+# Also verify via project directory encoding (belt-and-suspenders).
 TMUX_CWD=$(tmux display-message -t "$TMUX_SESSION" -p '#{pane_current_path}' 2>/dev/null)
 if [ -n "$TMUX_CWD" ]; then
-    # transcript_path is like: ~/.claude/projects/-home-user-project/abc.jsonl
-    # The project dir name encodes the cwd: -home-user-project -> /home/user/project
     PROJ_DIR=$(echo "$TRANSCRIPT_PATH" | sed 's|.*/projects/||; s|/[^/]*$||')
-    # Convert tmux cwd to the same encoded format
     TMUX_ENCODED=$(echo "$TMUX_CWD" | sed 's|/|-|g')
     [ "$PROJ_DIR" != "$TMUX_ENCODED" ] && exit 0
 fi
