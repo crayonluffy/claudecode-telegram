@@ -106,6 +106,7 @@ BOT_COMMANDS = [
     {"command": "resume", "description": "Resume session (picker)"},
     {"command": "continue_", "description": "Continue last session"},
     {"command": "scroll", "description": "Show last N lines"},
+    {"command": "usage", "description": "Show plan usage limits"},
     {"command": "help", "description": "Show all commands"},
 ]
 
@@ -122,7 +123,7 @@ HELP_TEXT = """Commands:
 
 More:
   /projects /sessions /attach /kill /clear
-  /commit /undo /diff /pwd /loop
+  /usage /commit /undo /diff /pwd /loop
   /pick N /y /n /ok /retry
   /verbose /coauthor /signature
 
@@ -1153,6 +1154,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             # Claude shortcuts
+            if cmd == "/usage":
+                if tmux_exists():
+                    tmux_send("/usage")
+                    tmux_send_enter()
+                    self.reply(chat_id, "Sent: /usage")
+                return
+
             if cmd == "/commit":
                 if tmux_exists():
                     tmux_send("/commit")
