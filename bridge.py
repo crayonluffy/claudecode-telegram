@@ -514,16 +514,16 @@ def send_prompt_keyboard(chat_id, question, options):
     msg_text = "\n".join(text_lines)
 
     # Build inline keyboard with label-only buttons
-    # Skip "Other" option — users can type custom text directly instead
+    # Hide "Type something"/"Other" — selecting them in Claude Code just declines
     keyboard = []
     for i, (label, _desc) in enumerate(options):
-        label_lower = label.strip().lower().rstrip('.')
-        if label_lower in ("other", "type something"):
+        clean = re.sub(r'^\d+\.\s*', '', label).strip().lower().rstrip('.')
+        if clean in ("other", "type something"):
             continue
         display = label[:60] + "..." if len(label) > 60 else label
         keyboard.append([{"text": display, "callback_data": f"pick:{i}"}])
     keyboard.append([{"text": "--- Dismiss (Escape) ---", "callback_data": "pick:dismiss"}])
-    msg_text += "\n\nType text for custom answer."
+    msg_text += "\n\nOr type a message to skip this prompt."
 
     result = telegram_api("sendMessage", {
         "chat_id": chat_id,
@@ -803,17 +803,22 @@ class Handler(BaseHTTPRequestHandler):
 
             selected_text = options[target_idx][0] if isinstance(options[target_idx], list) else options[target_idx]
             print(f"[pick] Selecting: {selected_text}, sending {target_idx - highlighted_idx} moves")
+
+            # Grab and clear the keyboard message ID BEFORE sending keys,
+            # so the monitor loop can't race and override with "Prompt was resolved"
+            with _prompt_lock:
+                saved_msg_id = _prompt_keyboard_message_id
+                _prompt_keyboard_message_id = None
+                # Keep _prompt_last_fingerprint so monitor won't re-send keyboard
+                _prompt_current_options = []
+
             select_prompt_option(target_idx, highlighted_idx, len(options))
 
-            with _prompt_lock:
-                if _prompt_keyboard_message_id:
-                    dismiss_prompt_keyboard(
-                        chat_id, _prompt_keyboard_message_id,
-                        f"Selected: {selected_text}"
-                    )
-                    _prompt_keyboard_message_id = None
-                    _prompt_last_fingerprint = None
-                    _prompt_current_options = []
+            if saved_msg_id:
+                dismiss_prompt_keyboard(
+                    chat_id, saved_msg_id,
+                    f"Selected: {selected_text}"
+                )
 
     def handle_message(self, update):
         global _prompt_last_fingerprint, _prompt_keyboard_message_id
@@ -1268,21 +1273,55 @@ class Handler(BaseHTTPRequestHandler):
         # Regular message
         print(f"[{chat_id}] {text[:50]}...")
 
-        # If there's an active interactive prompt, dismiss it and forward
-        # the text as a custom "Other" answer (Escape dismisses the TUI picker,
-        # then Claude falls back to accepting free-text input)
+        # If there's an active interactive prompt and user typed free text,
+        # navigate to "Type something" option, select it, and type the text.
         if tmux_exists() and check_and_show_prompt(chat_id):
-            tmux_send_escape()
-            time.sleep(0.3)
             with _prompt_lock:
-                if _prompt_keyboard_message_id and _prompt_keyboard_chat_id:
-                    dismiss_prompt_keyboard(
-                        _prompt_keyboard_chat_id, _prompt_keyboard_message_id,
-                        f"Custom answer: {text[:40]}..."
-                    )
-                    _prompt_keyboard_message_id = None
-                    _prompt_last_fingerprint = None
-                    _prompt_current_options = []
+                options = _prompt_current_options[:]
+                highlighted_idx = _prompt_highlighted_index
+                saved_msg_id = _prompt_keyboard_message_id
+                saved_chat_id = _prompt_keyboard_chat_id
+                _prompt_keyboard_message_id = None
+                _prompt_keyboard_chat_id = None
+                # Keep _prompt_last_fingerprint so monitor won't re-send keyboard
+                _prompt_current_options = []
+
+            # Find the "Type something" / "Other" option
+            type_idx = None
+            for i, opt in enumerate(options):
+                lbl = opt[0] if isinstance(opt, list) else opt
+                clean = re.sub(r'^\d+\.\s*', '', lbl).strip().lower().rstrip('.')
+                if clean in ("other", "type something"):
+                    type_idx = i
+                    break
+
+            session = get_current_session()
+
+            if type_idx is not None:
+                # Navigate to "Type something" with arrow keys (NO Enter!)
+                # Then just start typing — the TUI switches to text input mode
+                moves = type_idx - highlighted_idx
+                for _ in range(abs(moves)):
+                    key = "Down" if moves > 0 else "Up"
+                    subprocess.run(["tmux", "send-keys", "-t", session, key], timeout=5)
+                    time.sleep(0.05)
+                time.sleep(0.2)
+                # Type the custom text directly and submit
+                tmux_send(text, literal=True, session=session)
+                tmux_send_enter(session)
+            else:
+                # No "Type something" option — escape and send as regular message
+                tmux_send_escape(session)
+                time.sleep(0.5)
+                tmux_send(text, literal=True, session=session)
+                tmux_send_enter(session)
+
+            if saved_msg_id and saved_chat_id:
+                dismiss_prompt_keyboard(
+                    saved_chat_id, saved_msg_id,
+                    f"Custom answer: {text[:40]}"
+                )
+            return
 
         with open(PENDING_FILE, "w") as f:
             f.write(str(int(time.time())))

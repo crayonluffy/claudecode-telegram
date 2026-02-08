@@ -40,9 +40,11 @@ fi
 # Check if Claude Code is waiting for user input by inspecting the tmux pane.
 # Only match patterns that appear when Claude is IDLE (waiting for input).
 # Avoids "esc to interrupt" which appears during active streaming.
+# Also skip AskUserQuestion prompts (they show "Esc to cancel" / "Enter to select").
 sleep 0.3
 PANE_BOTTOM=$(tmux capture-pane -t "$TMUX_SESSION" -p 2>/dev/null | tail -8)
 echo "$PANE_BOTTOM" | grep -qE 'to navigate|ctrl-g to edit|tab to cycle' || exit 0
+echo "$PANE_BOTTOM" | grep -q 'Esc to cancel' && exit 0
 
 CHAT_ID=$(cat "$CHAT_ID_FILE")
 LAST_USER_LINE=$(grep -n '"type":"user"' "$TRANSCRIPT_PATH" | grep -v '"tool_result"' | tail -1 | cut -d: -f1)
