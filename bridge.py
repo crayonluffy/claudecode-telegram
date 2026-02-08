@@ -12,6 +12,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 DEFAULT_TMUX_SESSION = os.environ.get("TMUX_SESSION", "claude")
+PROJECTS_BASE = os.path.expanduser(os.environ.get("PROJECTS_BASE", "~/claude"))
 CHAT_ID_FILE = os.path.expanduser("~/.claude/telegram_chat_id")
 PENDING_FILE = os.path.expanduser("~/.claude/telegram_pending")
 HISTORY_FILE = os.path.expanduser("~/.claude/history.jsonl")
@@ -1045,13 +1046,22 @@ class Handler(BaseHTTPRequestHandler):
 
                 session_name = session_name or get_current_session()
 
+                # Auto-resolve working directory from session name if not specified
+                if not start_dir and session_name:
+                    candidate = os.path.join(PROJECTS_BASE, session_name)
+                    if os.path.isdir(candidate):
+                        start_dir = candidate
+                    elif os.path.isdir(PROJECTS_BASE):
+                        start_dir = PROJECTS_BASE
+
                 if tmux_exists(session_name):
                     self.reply(chat_id, f"⚠️ tmux '{session_name}' already exists.\n\n💡 Use /attach {session_name} to switch or /restart to restart Claude")
                     return
 
                 success, msg = tmux_create(session_name, start_dir, start_claude=True)
                 if success:
-                    self.reply(chat_id, f"✅ Created tmux session '{session_name}' and started Claude Code")
+                    dir_info = f" in `{start_dir}`" if start_dir else ""
+                    self.reply(chat_id, f"✅ Created tmux session '{session_name}'{dir_info} and started Claude Code")
                 else:
                     self.reply(chat_id, f"❌ {msg}")
                 return
