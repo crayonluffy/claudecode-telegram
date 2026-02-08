@@ -771,6 +771,31 @@ class Handler(BaseHTTPRequestHandler):
             tmux_send_enter()
             self.reply(chat_id, "Continuing most recent...")
 
+        elif data == "dismiss_msg":
+            msg_id = cb.get("message", {}).get("message_id")
+            telegram_api("deleteMessage", {"chat_id": chat_id, "message_id": msg_id})
+            return
+
+        elif data.startswith("attach:"):
+            session_name = data.split(":", 1)[1]
+            if not tmux_exists(session_name):
+                self.reply(chat_id, f"❌ Session '{session_name}' not found")
+                return
+            set_current_session(session_name)
+            # Update the button message to show the new selection
+            msg_id = cb.get("message", {}).get("message_id")
+            sessions = list_tmux_sessions()
+            kb = []
+            for s in sessions:
+                label = f"{'▶ ' if s == session_name else ''}{s}"
+                kb.append([{"text": label, "callback_data": f"attach:{s}"}])
+            telegram_api("editMessageText", {
+                "chat_id": chat_id,
+                "message_id": msg_id,
+                "text": f"📺 Sessions ({len(sessions)}) — current: {session_name}",
+                "reply_markup": {"inline_keyboard": kb}
+            })
+
         elif data.startswith("pick:"):
             pick_value = data.split(":", 1)[1]
             print(f"[pick] pick_value={pick_value}")
@@ -944,12 +969,16 @@ class Handler(BaseHTTPRequestHandler):
                 if not sessions:
                     self.reply(chat_id, "No tmux sessions found.\n\n💡 Use /start <name> to create one")
                     return
-                lines = ["📺 Available tmux sessions:\n"]
+                kb = []
                 for s in sessions:
-                    marker = " ← current" if s == current else ""
-                    lines.append(f"  • {s}{marker}")
-                lines.append(f"\n💡 Use /attach <name> to switch")
-                self.reply(chat_id, "\n".join(lines))
+                    label = f"{'▶ ' if s == current else ''}{s}"
+                    kb.append([{"text": label, "callback_data": f"attach:{s}"}])
+                kb.append([{"text": "✕ Dismiss", "callback_data": "dismiss_msg"}])
+                telegram_api("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": f"📺 Sessions ({len(sessions)}) — current: {current}",
+                    "reply_markup": {"inline_keyboard": kb}
+                })
                 return
 
             # Attach to tmux session
@@ -1158,7 +1187,29 @@ class Handler(BaseHTTPRequestHandler):
                 if tmux_exists():
                     tmux_send("/usage")
                     tmux_send_enter()
-                    self.reply(chat_id, "Sent: /usage")
+                    time.sleep(1.5)
+                    content = strip_ansi(capture_tmux_pane() or "")
+                    # Close the usage panel
+                    tmux_send_escape()
+                    # Find the last "Current session" block (avoid duplicates from prior captures)
+                    lines = content.split('\n')
+                    start_idx = -1
+                    for i, l in enumerate(lines):
+                        if 'Current session' in l:
+                            start_idx = i
+                    if start_idx >= 0:
+                        usage_lines = []
+                        for l in lines[start_idx:]:
+                            s = l.strip()
+                            if 'Esc to cancel' in s or 'to cycle' in s:
+                                break
+                            if not s:
+                                continue
+                            usage_lines.append(s)
+                        if usage_lines:
+                            self.reply(chat_id, '\n'.join(usage_lines))
+                            return
+                    self.reply(chat_id, "Could not capture usage output")
                 return
 
             if cmd == "/commit":
