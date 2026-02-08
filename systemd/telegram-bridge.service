@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram Claude Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%BRIDGE_DIR%
+EnvironmentFile=%BRIDGE_DIR%/.env
+ExecStart=/usr/bin/python3 %BRIDGE_DIR%/bridge.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

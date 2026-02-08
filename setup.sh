@@ -1,0 +1,73 @@
+#!/bin/bash
+# Setup systemd services for Telegram Claude Bridge
+# Usage: ./setup.sh
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SYSTEMD_DIR="$HOME/.config/systemd/user"
+
+echo "=== Telegram Bridge Setup ==="
+
+# Check .env exists
+if [ ! -f "$SCRIPT_DIR/.env" ]; then
+    echo "ERROR: .env file not found. Create it with:"
+    echo "  TELEGRAM_BOT_TOKEN=your_token_here"
+    echo "  PORT=8090"
+    exit 1
+fi
+
+# Kill any stray bridge.py processes (nohup leftovers)
+STRAY_PIDS=$(pgrep -f "python3.*bridge.py" 2>/dev/null || true)
+if [ -n "$STRAY_PIDS" ]; then
+    echo "Killing stray bridge.py processes: $STRAY_PIDS"
+    kill $STRAY_PIDS 2>/dev/null || true
+    sleep 1
+fi
+
+# Install hooks
+mkdir -p "$HOME/.claude/hooks"
+echo "Installing hooks..."
+cp "$SCRIPT_DIR/hooks/"*.sh "$HOME/.claude/hooks/"
+chmod +x "$HOME/.claude/hooks/"*.sh
+
+# Copy service files
+mkdir -p "$SYSTEMD_DIR"
+echo "Installing systemd units..."
+cp "$SCRIPT_DIR/systemd/"*.service "$SYSTEMD_DIR/"
+cp "$SCRIPT_DIR/systemd/"*.path "$SYSTEMD_DIR/"
+
+# Reload systemd
+systemctl --user daemon-reload
+echo "Reloaded systemd"
+
+# Enable and start services
+echo "Enabling services..."
+systemctl --user enable telegram-bridge.service
+systemctl --user enable telegram-bridge-watcher.path
+systemctl --user enable cloudflared.service
+
+echo "Starting services..."
+systemctl --user restart telegram-bridge.service
+systemctl --user restart telegram-bridge-watcher.path
+systemctl --user restart cloudflared.service
+
+# Ensure lingering is enabled (services survive logout)
+loginctl enable-linger "$(whoami)" 2>/dev/null || true
+
+echo ""
+echo "=== Status ==="
+systemctl --user status telegram-bridge.service --no-pager -l 2>/dev/null | head -5
+echo "---"
+systemctl --user status telegram-bridge-watcher.path --no-pager -l 2>/dev/null | head -5
+echo "---"
+systemctl --user status cloudflared.service --no-pager -l 2>/dev/null | head -5
+
+echo ""
+echo "Done! Hot reload is active - bridge restarts automatically when bridge.py or hooks/ change."
+echo ""
+echo "Useful commands:"
+echo "  systemctl --user status telegram-bridge     # Check bridge status"
+echo "  systemctl --user restart telegram-bridge     # Manual restart"
+echo "  journalctl --user -u telegram-bridge -f      # Live logs"
+echo "  systemctl --user stop telegram-bridge-watcher.path  # Disable hot reload"

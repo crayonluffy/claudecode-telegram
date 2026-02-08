@@ -1,0 +1,13 @@
+[Unit]
+Description=Cloudflare Tunnel for Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

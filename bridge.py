@@ -96,6 +96,8 @@ BOT_COMMANDS = [
     {"command": "stop", "description": "Interrupt Claude (Escape)"},
     {"command": "screenshot", "description": "Capture tmux screen"},
     {"command": "status", "description": "Show project, branch, state"},
+    {"command": "sessions", "description": "List all tmux sessions"},
+    {"command": "attach", "description": "Switch to tmux session"},
     {"command": "start", "description": "Create tmux + start Claude"},
     {"command": "restart", "description": "Restart Claude Code"},
     {"command": "new", "description": "Start new Claude session"},
@@ -512,11 +514,16 @@ def send_prompt_keyboard(chat_id, question, options):
     msg_text = "\n".join(text_lines)
 
     # Build inline keyboard with label-only buttons
+    # Skip "Other" option — users can type custom text directly instead
     keyboard = []
     for i, (label, _desc) in enumerate(options):
+        label_lower = label.strip().lower().rstrip('.')
+        if label_lower in ("other", "type something"):
+            continue
         display = label[:60] + "..." if len(label) > 60 else label
         keyboard.append([{"text": display, "callback_data": f"pick:{i}"}])
     keyboard.append([{"text": "--- Dismiss (Escape) ---", "callback_data": "pick:dismiss"}])
+    msg_text += "\n\nType text for custom answer."
 
     result = telegram_api("sendMessage", {
         "chat_id": chat_id,
@@ -1261,11 +1268,21 @@ class Handler(BaseHTTPRequestHandler):
         # Regular message
         print(f"[{chat_id}] {text[:50]}...")
 
-        # Check if there's an active interactive prompt before forwarding
-        # This prevents text+Enter from accidentally selecting a prompt option
+        # If there's an active interactive prompt, dismiss it and forward
+        # the text as a custom "Other" answer (Escape dismisses the TUI picker,
+        # then Claude falls back to accepting free-text input)
         if tmux_exists() and check_and_show_prompt(chat_id):
-            self.reply(chat_id, "There's an active prompt — use the buttons above to select, or /pick N")
-            return
+            tmux_send_escape()
+            time.sleep(0.3)
+            with _prompt_lock:
+                if _prompt_keyboard_message_id and _prompt_keyboard_chat_id:
+                    dismiss_prompt_keyboard(
+                        _prompt_keyboard_chat_id, _prompt_keyboard_message_id,
+                        f"Custom answer: {text[:40]}..."
+                    )
+                    _prompt_keyboard_message_id = None
+                    _prompt_last_fingerprint = None
+                    _prompt_current_options = []
 
         with open(PENDING_FILE, "w") as f:
             f.write(str(int(time.time())))

@@ -1,0 +1,6 @@
+[Unit]
+Description=Restart telegram-bridge on file change
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --user restart telegram-bridge.service

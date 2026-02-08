@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch bridge.py and hooks for changes (hot reload)
+
+[Path]
+PathModified=%BRIDGE_DIR%/bridge.py
+PathModified=%BRIDGE_DIR%/hooks
+
+[Install]
+WantedBy=default.target

@@ -5,7 +5,12 @@
 SETTINGS_FILE=~/.claude/telegram_settings.json
 CHAT_ID_FILE=~/.claude/telegram_chat_id
 PENDING_FILE=~/.claude/telegram_pending
-TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+ENV_FILE=%BRIDGE_DIR%/.env
+
+# Load token from .env file (Claude processes don't inherit the bridge's env)
+if [ -z "$TELEGRAM_BOT_TOKEN" ] && [ -f "$ENV_FILE" ]; then
+    TELEGRAM_BOT_TOKEN=$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2)
+fi
 
 # Only run for Telegram-initiated messages
 [ ! -f "$PENDING_FILE" ] && exit 0

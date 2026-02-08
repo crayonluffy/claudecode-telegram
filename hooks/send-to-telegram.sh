@@ -2,11 +2,20 @@
 # Claude Code Stop hook - sends response back to Telegram
 # Install: copy to ~/.claude/hooks/ and add to ~/.claude/settings.json
 
-TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-YOUR_BOT_TOKEN_HERE}"
+ENV_FILE=%BRIDGE_DIR%/.env
+# Load token from .env file (Claude processes don't inherit the bridge's env)
+if [ -z "$TELEGRAM_BOT_TOKEN" ] && [ -f "$ENV_FILE" ]; then
+    TELEGRAM_BOT_TOKEN=$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2)
+fi
+[ -z "$TELEGRAM_BOT_TOKEN" ] && exit 0
+
 INPUT=$(cat)
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path')
 CHAT_ID_FILE=~/.claude/telegram_chat_id
 PENDING_FILE=~/.claude/telegram_pending
+SESSION_FILE=~/.claude/telegram_tmux_session
+TMUX_SESSION=$(cat "$SESSION_FILE" 2>/dev/null)
+TMUX_SESSION="${TMUX_SESSION:-claude}"
 
 # Only respond to Telegram-initiated messages
 [ ! -f "$PENDING_FILE" ] && exit 0
@@ -16,11 +25,23 @@ NOW=$(date +%s)
 [ -z "$PENDING_TIME" ] || [ $((NOW - PENDING_TIME)) -gt 600 ] && rm -f "$PENDING_FILE" && exit 0
 [ ! -f "$CHAT_ID_FILE" ] || [ ! -f "$TRANSCRIPT_PATH" ] && rm -f "$PENDING_FILE" && exit 0
 
+# Only allow the Claude instance running in the target tmux session to respond.
+# This prevents other Claude instances (e.g. MRC, SI) from leaking responses to Telegram.
+TMUX_CWD=$(tmux display-message -t "$TMUX_SESSION" -p '#{pane_current_path}' 2>/dev/null)
+if [ -n "$TMUX_CWD" ]; then
+    # transcript_path is like: ~/.claude/projects/-home-user-project/abc.jsonl
+    # The project dir name encodes the cwd: -home-user-project -> /home/user/project
+    PROJ_DIR=$(echo "$TRANSCRIPT_PATH" | sed 's|.*/projects/||; s|/[^/]*$||')
+    # Convert tmux cwd to the same encoded format
+    TMUX_ENCODED=$(echo "$TMUX_CWD" | sed 's|/|-|g')
+    [ "$PROJ_DIR" != "$TMUX_ENCODED" ] && exit 0
+fi
+
 # Check if Claude Code is waiting for user input by inspecting the tmux pane.
 # Only match patterns that appear when Claude is IDLE (waiting for input).
 # Avoids "esc to interrupt" which appears during active streaming.
 sleep 0.3
-PANE_BOTTOM=$(tmux capture-pane -t claude -p 2>/dev/null | tail -8)
+PANE_BOTTOM=$(tmux capture-pane -t "$TMUX_SESSION" -p 2>/dev/null | tail -8)
 echo "$PANE_BOTTOM" | grep -qE 'to navigate|ctrl-g to edit|tab to cycle' || exit 0
 
 CHAT_ID=$(cat "$CHAT_ID_FILE")
