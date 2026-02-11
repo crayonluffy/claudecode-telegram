@@ -25,15 +25,23 @@ dbg "HOOK START session=$TMUX_SESSION transcript=$TRANSCRIPT_PATH input=$(echo "
 # Only respond to Telegram-initiated messages
 [ ! -f "$PENDING_FILE" ] && dbg "EXIT: no pending file" && exit 0
 
-PENDING_TIME=$(cat "$PENDING_FILE" 2>/dev/null)
+PENDING_CONTENT=$(cat "$PENDING_FILE" 2>/dev/null)
+PENDING_TIME=$(echo "$PENDING_CONTENT" | cut -d: -f1)
+PENDING_SESSION=$(echo "$PENDING_CONTENT" | cut -d: -f2-)
 NOW=$(date +%s)
 if [ -z "$PENDING_TIME" ] || [ $((NOW - PENDING_TIME)) -gt 600 ]; then dbg "EXIT: stale pending (age=$((NOW - PENDING_TIME))s)"; rm -f "$PENDING_FILE"; exit 0; fi
+# Override TMUX_SESSION with session from pending file if available
+if [ -n "$PENDING_SESSION" ]; then TMUX_SESSION="$PENDING_SESSION"; fi
 if [ ! -f "$CHAT_ID_FILE" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then dbg "EXIT: missing chatid=$CHAT_ID_FILE or transcript=$TRANSCRIPT_PATH"; rm -f "$PENDING_FILE"; exit 0; fi
 
 # Only allow the Claude instance running in the target tmux session to respond.
 # This prevents other Claude instances (e.g. MRC, SI) from leaking responses to Telegram.
-# Quick check: compare our own tmux session name with the target session.
-MY_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+# Use TMUX_PANE (inherited from tmux shell) to detect our actual session, not the attached client.
+if [ -n "$TMUX_PANE" ]; then
+    MY_SESSION=$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}' 2>/dev/null)
+else
+    MY_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+fi
 if [ -n "$MY_SESSION" ] && [ "$MY_SESSION" != "$TMUX_SESSION" ]; then dbg "EXIT: session mismatch MY=$MY_SESSION TARGET=$TMUX_SESSION"; exit 0; fi
 # Also verify via project directory encoding (belt-and-suspenders).
 TMUX_CWD=$(tmux display-message -t "$TMUX_SESSION" -p '#{pane_current_path}' 2>/dev/null)
@@ -58,7 +66,10 @@ for _try in 1 2 3 4 5; do
     fi
 done
 if [ "$IDLE_FOUND" -eq 0 ]; then dbg "EXIT: pane not idle after 5 retries, last pane: $(echo "$PANE_BOTTOM" | tail -3 | tr '\n' '|')"; exit 0; fi
-if echo "$PANE_BOTTOM" | grep -q 'Esc to cancel'; then dbg "EXIT: AskUserQuestion prompt active"; exit 0; fi
+# When an interactive prompt is active (Esc to cancel), don't skip entirely.
+# Send any response text so the user sees context, then the bridge's prompt
+# monitor will show the buttons in Telegram for the user to pick.
+if echo "$PANE_BOTTOM" | grep -q 'Esc to cancel'; then dbg "NOTE: AskUserQuestion prompt active, sending response text anyway"; fi
 
 CHAT_ID=$(cat "$CHAT_ID_FILE")
 LAST_USER_LINE=$(grep -n '"type":"user"' "$TRANSCRIPT_PATH" | grep -v '"tool_result"' | grep -v '"type":"progress"' | tail -1 | cut -d: -f1)

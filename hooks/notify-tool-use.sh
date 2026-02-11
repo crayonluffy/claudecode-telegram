@@ -19,10 +19,22 @@ fi
 
 # Only allow the Claude instance running in the target tmux session to send notifications.
 # This prevents other Claude instances from leaking tool-use updates to Telegram.
-SESSION_FILE=~/.claude/telegram_tmux_session
-TMUX_SESSION=$(cat "$SESSION_FILE" 2>/dev/null)
-TMUX_SESSION="${TMUX_SESSION:-claude}"
-MY_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+# Read target session from pending file (format: timestamp:session) for accuracy.
+PENDING_CONTENT=$(cat "$PENDING_FILE" 2>/dev/null)
+PENDING_SESSION=$(echo "$PENDING_CONTENT" | cut -d: -f2-)
+if [ -n "$PENDING_SESSION" ]; then
+    TMUX_SESSION="$PENDING_SESSION"
+else
+    SESSION_FILE=~/.claude/telegram_tmux_session
+    TMUX_SESSION=$(cat "$SESSION_FILE" 2>/dev/null)
+    TMUX_SESSION="${TMUX_SESSION:-claude}"
+fi
+# Use TMUX_PANE to detect our actual session, not the attached client.
+if [ -n "$TMUX_PANE" ]; then
+    MY_SESSION=$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}' 2>/dev/null)
+else
+    MY_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+fi
 [ -n "$MY_SESSION" ] && [ "$MY_SESSION" != "$TMUX_SESSION" ] && exit 0
 
 # Check if verbose is enabled

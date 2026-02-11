@@ -367,10 +367,10 @@ def _is_horizontal_rule(line):
 
 def _is_cursor_char(ch):
     """Check if a character is a selection cursor used by Claude Code."""
-    return ch in ('\u276f', '\u203a', '>')  # ❯, ›, >
+    return ch in ('\u276f', '\u203a')  # ❯, ›  (NOT ascii '>' — too many false positives)
 
 
-def parse_interactive_prompt(pane_text):
+def parse_interactive_prompt(pane_text, debug_log=None):
     """Parse an interactive selection prompt from tmux pane content.
 
     Claude Code renders AskUserQuestion prompts like:
@@ -387,9 +387,17 @@ def parse_interactive_prompt(pane_text):
     Detection uses the footer "to navigate" as a reliable signal,
     combined with cursor character (›, ❯, or >) on an option line.
     Returns (question, [options_as_[label,desc]], highlighted_index) or None.
+    If debug_log is provided, it's called with failure details.
     """
     text = strip_ansi(pane_text)
     lines = text.split('\n')
+
+    # Strip trailing empty lines — TUI prompts (especially the multi-question
+    # "Submit answers" confirmation) may render content in the upper portion of
+    # the pane, leaving many blank lines below.  Without this trim the footer
+    # falls outside the "bottom N lines" search window.
+    while lines and not lines[-1].strip():
+        lines.pop()
 
     # Look for the navigation footer at the BOTTOM of the pane.
     # The actual footer is always one of the last few visible lines:
@@ -400,25 +408,44 @@ def parse_interactive_prompt(pane_text):
         if i < 0:
             break
         s = lines[i].strip()
-        if s.startswith('Enter') and 'to navigate' in s:
+        if 'Enter to select' in s and 'to navigate' in s and 'Esc to cancel' in s:
             footer_line = i
             break
 
-    if footer_line is None:
-        return None
-
-    # Find the cursor line (›, ❯, or >) above the footer
+    # --- Fallback: footer-less prompt detection (e.g. "Submit answers" screen) ---
+    # Some TUI screens (multi-question confirmation) render cursor + options at
+    # the bottom WITHOUT the standard navigation footer.  Detect them by
+    # scanning the last ~15 trimmed lines for a cursor character line.
     cursor_line = None
-    for i in range(footer_line - 1, max(footer_line - 40, -1), -1):
-        s = lines[i].strip()
-        if len(s) > 1 and _is_cursor_char(s[0]) and s[1] == ' ':
-            cursor_line = i
-            break
+    if footer_line is not None:
+        # Footer found — scan above it for cursor
+        for i in range(footer_line - 1, max(footer_line - 40, -1), -1):
+            s = lines[i].strip()
+            if len(s) > 1 and _is_cursor_char(s[0]) and s[1] == ' ':
+                cursor_line = i
+                break
+        # Use footer as scan boundary
+        scan_end = footer_line
+    else:
+        # No footer — scan bottom 6 trimmed lines for cursor char on a
+        # NUMBERED option (e.g. "❯ 1. Submit answers").  Tight window
+        # (matching the monitor) avoids false positives from numbered lists
+        # higher up in conversation text.
+        for i in range(len(lines) - 1, max(len(lines) - 6, -1), -1):
+            s = lines[i].strip()
+            if (len(s) > 4 and _is_cursor_char(s[0]) and s[1] == ' '
+                    and re.match(r'\d+\.', s[2:])):
+                cursor_line = i
+                break
+        # Use end of trimmed lines as scan boundary
+        scan_end = len(lines)
 
     if cursor_line is None:
+        if debug_log:
+            bottom5 = [lines[i].strip() for i in range(max(0, len(lines)-6), len(lines))]
+            debug_log(f"no cursor char in bottom lines (footer={'yes' if footer_line else 'no'}): {bottom5}")
         return None
 
-    cursor_char = lines[cursor_line].strip()[0]
     cursor_col = len(lines[cursor_line]) - len(lines[cursor_line].lstrip())
     label_indent = cursor_col + 2  # cursor + space = 2 chars
 
@@ -454,11 +481,11 @@ def parse_interactive_prompt(pane_text):
             question_text = s
             break
 
-    # Collect options and descriptions from first_option to footer
+    # Collect options and descriptions from first_option to scan_end
     options = []
     highlighted_index = 0
 
-    for i in range(first_option, footer_line):
+    for i in range(first_option, scan_end):
         line = lines[i]
         s = line.strip()
         if not s:
@@ -488,6 +515,8 @@ def parse_interactive_prompt(pane_text):
                     options[-1][1] = s
 
     if len(options) < 2:
+        if debug_log:
+            debug_log(f"only {len(options)} options found (need 2+), footer={footer_line} cursor={cursor_line} first_opt={first_option}")
         return None
 
     return (question_text or "Select an option:", options, highlighted_index)
@@ -620,6 +649,7 @@ def prompt_monitor_loop(chat_id):
 
     time.sleep(0.5)
     mlog("Monitor started")
+    _heartbeat_counter = 0
 
     try:
         while os.path.exists(PENDING_FILE):
@@ -629,16 +659,56 @@ def prompt_monitor_loop(chat_id):
                     time.sleep(0.5)
                     continue
 
-                parsed = parse_interactive_prompt(pane_text)
+                # Check bottom lines for a real AskUserQuestion prompt.
+                # Strip trailing empty lines first (TUI may leave blank space below content).
+                _trimmed = pane_text.rstrip('\n ').split('\n')
+                _bottom_lines = _trimmed[-6:] if len(_trimmed) >= 6 else _trimmed
+                _bottom_text = '\n'.join(_bottom_lines)
+                _has_real_footer = any(
+                    'Enter to select' in l and 'to navigate' in l and 'Esc to cancel' in l
+                    for l in _bottom_lines
+                )
+                # Also detect footer-less prompts (e.g. "Submit answers" screen)
+                # by checking if a cursor char on a NUMBERED option appears in
+                # bottom lines. Requiring "N. " prevents false positives from
+                # the user-input prompt "❯ some text".
+                if not _has_real_footer:
+                    for _bl in _bottom_lines:
+                        _bs = _bl.strip()
+                        if (len(_bs) > 4
+                                and _bs[0] in ('\u276f', '\u203a')
+                                and _bs[1] == ' '
+                                and re.match(r'\d+\.', _bs[2:])):
+                            _has_real_footer = True
+                            break
+
+                # Pass debug logger when real footer is found to diagnose parse failures
+                _dbg_info = []
+                def _parse_dbg(msg):
+                    _dbg_info.append(msg)
+
+                parsed = parse_interactive_prompt(
+                    pane_text,
+                    debug_log=_parse_dbg if _has_real_footer else None
+                )
                 if parsed:
                     labels = [o[0] for o in parsed[1]]
                     mlog(f"Parsed: True q={parsed[0]!r} opts={len(parsed[1])} labels={labels} hi={parsed[2]}")
-                # Dump full pane to file for debugging when footer is found
-                elif 'to navigate' in pane_text and 'to select' in pane_text:
+                    _heartbeat_counter = 0
+                elif _has_real_footer:
+                    # Real footer at bottom but parser failed - dump pane for debugging
                     dump_path = os.path.expanduser("~/.claude/pane_dump.txt")
                     with open(dump_path, "w") as f:
                         f.write(pane_text)
-                    mlog(f"Footer found but parse failed, pane dumped to {dump_path}")
+                    dbg_detail = '; '.join(_dbg_info) if _dbg_info else 'unknown'
+                    mlog(f"REAL footer found but parse failed: {dbg_detail}")
+                    _heartbeat_counter = 0
+                else:
+                    # No prompt and no real footer - log heartbeat every ~5s
+                    _heartbeat_counter += 1
+                    if _heartbeat_counter % 10 == 1:  # every ~5s (10 * 0.5s)
+                        bottom5 = [l.strip() for l in _trimmed[-5:] if l.strip()]
+                        mlog(f"heartbeat: no prompt, bottom={bottom5}")
 
                 with _prompt_lock:
                     if parsed is not None:
@@ -1319,7 +1389,7 @@ class Handler(BaseHTTPRequestHandler):
                 prompt = parts[1].replace('"', '\\"')
                 full = f'{prompt} Output <promise>DONE</promise> when complete.'
                 with open(PENDING_FILE, "w") as f:
-                    f.write(str(int(time.time())))
+                    f.write(f"{int(time.time())}:{get_current_session()}")
                 threading.Thread(target=send_typing_loop, args=(chat_id,), daemon=True).start()
                 threading.Thread(target=prompt_monitor_loop, args=(chat_id,), daemon=True).start()
                 tmux_send(f'/ralph-loop:ralph-loop "{full}" --max-iterations 5 --completion-promise "DONE"')
@@ -1414,8 +1484,9 @@ class Handler(BaseHTTPRequestHandler):
                 )
             return
 
+        current_session = get_current_session()
         with open(PENDING_FILE, "w") as f:
-            f.write(str(int(time.time())))
+            f.write(f"{int(time.time())}:{current_session}")
 
         if msg_id:
             telegram_api("setMessageReaction", {"chat_id": chat_id, "message_id": msg_id, "reaction": [{"type": "emoji", "emoji": "\u2705"}]})
@@ -1510,7 +1581,7 @@ class Handler(BaseHTTPRequestHandler):
 
         print(f"[{chat_id}] Album: {len(paths)} photos")
         with open(PENDING_FILE, "w") as f:
-            f.write(str(int(time.time())))
+            f.write(f"{int(time.time())}:{get_current_session()}")
 
         threading.Thread(target=send_typing_loop, args=(chat_id,), daemon=True).start()
         threading.Thread(target=prompt_monitor_loop, args=(chat_id,), daemon=True).start()
@@ -1562,7 +1633,7 @@ class Handler(BaseHTTPRequestHandler):
 
         print(f"[{chat_id}] Photo: {local_path}")
         with open(PENDING_FILE, "w") as f:
-            f.write(str(int(time.time())))
+            f.write(f"{int(time.time())}:{get_current_session()}")
 
         threading.Thread(target=send_typing_loop, args=(chat_id,), daemon=True).start()
         threading.Thread(target=prompt_monitor_loop, args=(chat_id,), daemon=True).start()

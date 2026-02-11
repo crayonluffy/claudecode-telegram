@@ -33,6 +33,46 @@ for f in "$SCRIPT_DIR/hooks/"*.sh; do
 done
 chmod +x "$HOME/.claude/hooks/"*.sh
 
+# Register hooks in Claude settings.json automatically
+SETTINGS="$HOME/.claude/settings.json"
+echo "Registering hooks in $SETTINGS..."
+python3 - "$SETTINGS" << 'PYEOF'
+import json, sys, os
+
+settings_path = sys.argv[1]
+
+if os.path.exists(settings_path):
+    with open(settings_path) as f:
+        settings = json.load(f)
+else:
+    settings = {}
+
+hooks = settings.setdefault("hooks", {})
+
+TG_HOOKS = {
+    "Stop": {
+        "hooks": [{"type": "command", "command": "~/.claude/hooks/send-to-telegram.sh"}]
+    },
+    "PostToolUse": {
+        "hooks": [{"type": "command", "command": "~/.claude/hooks/notify-tool-use.sh"}]
+    },
+}
+
+for event, hook_entry in TG_HOOKS.items():
+    event_hooks = hooks.setdefault(event, [])
+    cmd = hook_entry["hooks"][0]["command"]
+    already = any(cmd in str(h.get("hooks", [])) for h in event_hooks)
+    if not already:
+        event_hooks.append(hook_entry)
+        print(f"  + Registered {event}: {cmd}")
+    else:
+        print(f"  = Already registered {event}: {cmd}")
+
+with open(settings_path, "w") as f:
+    json.dump(settings, f, indent=2)
+    f.write("\n")
+PYEOF
+
 # Copy service files, replacing %BRIDGE_DIR% placeholder with actual path
 mkdir -p "$SYSTEMD_DIR"
 echo "Installing systemd units..."
